@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Beheaded · three.js</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #07060d; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #d9d3ee; }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .vignette { position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 45%, transparent 45%, rgba(3, 2, 8, 0.75) 100%); }
+  .title { position: fixed; top: 22px; left: 24px; pointer-events: none; }
+  .title b { display: block; font-size: 22px; font-weight: 600; letter-spacing: 0.42em;
+    color: #e9fff7; text-shadow: 0 0 18px rgba(90, 255, 210, 0.5); }
+  .title span { font-size: 12px; letter-spacing: 0.06em; color: #8a83a6; }
+  .views { position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%); display: flex; gap: 8px; }
+  .views button { font: inherit; font-size: 13px; color: #cfeee6; cursor: pointer;
+    padding: 8px 16px; border-radius: 999px; border: 1px solid rgba(120, 255, 220, 0.28);
+    background: rgba(18, 14, 30, 0.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    transition: border-color 0.2s, color 0.2s; }
+  .views button:hover, .views button:focus-visible { border-color: rgba(120, 255, 220, 0.8); color: #fff; outline: none; }
+  .hint { position: fixed; left: 0; right: 0; bottom: 18px; margin: 0; text-align: center;
+    font-size: 12px; color: #6f6890; pointer-events: none; }
+  @media (max-width: 600px) {
+    .title { top: 16px; left: 16px; }
+    .title b { font-size: 18px; }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div class="vignette"></div>
+<div class="title"><b>BEHEADED</b><span>three.js · formes primitives uniquement</span></div>
+<nav class="views">
+  <button data-view="front">Face</button>
+  <button data-view="three">3/4</button>
+  <button data-view="profile">Profil</button>
+</nav>
+<!-- Vue initiale : ?view=front | three | profile -->
+<p class="hint">Glisser : tourner · Molette / pincement : zoom</p>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ============================================================
+   Utilitaires (tout est procédural : canvas, formes, code)
+   ============================================================ */
+const rnd = (n) => { const s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s); };
+
+function canvasTexture(canvas) {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function gradientTexture() {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 512;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 512);
+  grd.addColorStop(0, '#1e1638');
+  grd.addColorStop(0.55, '#0c0a16');
+  grd.addColorStop(1, '#040307');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 4, 512);
+  return canvasTexture(c);
+}
+function glowTexture(stops) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  stops.forEach(([o, col]) => grd.addColorStop(o, col));
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 256, 256);
+  return canvasTexture(c);
+}
+// Texture de la cape : dégradé violet + liseré rouge-orangé en bas
+function capeTexture() {
+  const c = document.createElement('canvas');
+  c.width = 8; c.height = 256;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0, '#3d1d6b');
+  grd.addColorStop(1, '#1d0c36');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 8, 256);
+  g.fillStyle = '#c4401e';
+  g.fillRect(0, 232, 8, 24);
+  return canvasTexture(c);
+}
+
+// Ajoute un mesh : géométrie + matériau + transform (position, rotation, échelle)
+function add(parent, geo, mat, { x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1, cast = true } = {}) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.rotation.set(rx, ry, rz);
+  m.scale.set(sx, sy, sz);
+  m.castShadow = cast;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+// Membre : cylindre dont le pivot est en haut (il pend vers -Y)
+function limb(parent, rTop, rBot, len, mat, opts) {
+  const g = new THREE.CylinderGeometry(rTop, rBot, len, 14);
+  g.translate(0, -len / 2, 0);
+  return add(parent, g, mat, opts);
+}
+function ball(parent, r, mat, opts) {
+  return add(parent, new THREE.SphereGeometry(r, 16, 12), mat, opts);
+}
+// Solide de révolution, points (rayon, hauteur) du bas vers le haut
+function lathe(parent, pts, mat, opts, segs = 28) {
+  const g = new THREE.LatheGeometry(pts.map(([x, y]) => new THREE.Vector2(x, y)), segs);
+  return add(parent, g, mat, opts);
+}
+function flameMat(r, g, b, opacity) {
+  return new THREE.MeshBasicMaterial({
+    color: new THREE.Color(r, g, b), transparent: true, opacity,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+}
+
+/* ============================================================
+   Rendu & scène
+   ============================================================ */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = gradientTexture();
+scene.fog = new THREE.FogExp2(0x07060d, 0.05);
+// Environnement procédural (pour les reflets du métal), généré par code
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ============================================================
+   Matériaux
+   ============================================================ */
+const M = {
+  coat:   new THREE.MeshStandardMaterial({ color: 0x171c44, roughness: 0.72, envMapIntensity: 0.35, side: THREE.DoubleSide }),
+  coatLo: new THREE.MeshStandardMaterial({ color: 0x101433, roughness: 0.75, envMapIntensity: 0.3, side: THREE.DoubleSide }),
+  purple: new THREE.MeshStandardMaterial({ color: 0x4a1f7a, roughness: 0.6, envMapIntensity: 0.2 }),
+  dark:   new THREE.MeshStandardMaterial({ color: 0x0d0b15, roughness: 0.5, metalness: 0.1, envMapIntensity: 0.5 }),
+  red:    new THREE.MeshStandardMaterial({ color: 0xb8331c, roughness: 0.45, emissive: 0x4a0a02, emissiveIntensity: 0.6, envMapIntensity: 0.6 }),
+  ember:  new THREE.MeshStandardMaterial({ color: 0xff6a22, emissive: 0xff4a0c, emissiveIntensity: 2.4, roughness: 0.35 }),
+  steel:  new THREE.MeshStandardMaterial({ color: 0xa9b4c8, metalness: 1, roughness: 0.35, envMapIntensity: 0.7 }),
+  brass:  new THREE.MeshStandardMaterial({ color: 0x9b7842, metalness: 0.9, roughness: 0.35, envMapIntensity: 1.2 }),
+  grip:   new THREE.MeshStandardMaterial({ color: 0x2a0d12, roughness: 0.85 }),
+  cape:   new THREE.MeshStandardMaterial({ map: capeTexture(), roughness: 0.85, envMapIntensity: 0.3, side: THREE.DoubleSide }),
+};
+
+const camera = new THREE.PerspectiveCamera(32, window.innerWidth / window.innerHeight, 0.1, 100);
+
+/* ============================================================
+   Sol, flaque de lumière, lumières
+   ============================================================ */
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 96),
+  new THREE.MeshStandardMaterial({ color: 0x0d0c16, roughness: 0.9, metalness: 0, envMapIntensity: 0.25 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const pool = new THREE.Mesh(
+  new THREE.PlaneGeometry(3, 3),
+  new THREE.MeshBasicMaterial({
+    map: glowTexture([[0, 'rgba(100,255,170,0.28)'], [0.45, 'rgba(40,120,90,0.08)'], [1, 'rgba(0,0,0,0)']]),
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  })
+);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = 0.004;
+scene.add(pool);
+
+// Lumière principale chaude + contre-jour froid + ambiance bleue très faible
+scene.add(new THREE.HemisphereLight(0x3a4c86, 0x140a1c, 0.3));
+
+const key = new THREE.DirectionalLight(0xffb36b, 3.4);
+key.position.set(4.2, 4.6, 2.6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -2.5, right: 2.5, top: 3, bottom: -1, near: 1, far: 16 });
+key.shadow.bias = -0.0005;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const rim = new THREE.DirectionalLight(0x6e96ff, 3.6);
+rim.position.set(-3.2, 2.8, -4.8);
+scene.add(rim);
+
+/* ============================================================
+   Personnage (hero) — origine aux pieds, face à +Z
+   ============================================================ */
+const hero = new THREE.Group();
+hero.scale.setScalar(0.86);
+scene.add(hero);
+const bob = new THREE.Group(); // respiration / rebond d'idle
+hero.add(bob);
+
+// Bassin
+const hips = new THREE.Group();
+hips.position.y = 0.92;
+bob.add(hips);
+ball(hips, 0.16, M.coatLo, { sx: 1.05, sy: 0.72, sz: 0.8 });
+
+// Jambes : en garde, genoux fléchis, botte sombre
+function leg(side) {
+  const hip = new THREE.Group();
+  hip.position.set(0.1 * side, -0.02, 0);
+  hip.rotation.x = side > 0 ? -0.42 : -0.2;
+  hips.add(hip);
+  limb(hip, 0.095, 0.075, 0.46, M.coatLo);
+
+  const knee = new THREE.Group();
+  knee.position.y = -0.46;
+  knee.rotation.x = side > 0 ? 0.85 : 0.75;
+  hip.add(knee);
+  ball(knee, 0.075, M.coatLo);
+  limb(knee, 0.072, 0.056, 0.42, M.coatLo);
+
+  const ankle = new THREE.Group();
+  ankle.position.y = -0.42;
+  knee.add(ankle);
+  add(ankle, new THREE.CylinderGeometry(0.078, 0.072, 0.22, 14), M.dark, { y: 0.08 });   // tige de botte
+  add(ankle, new THREE.BoxGeometry(0.15, 0.1, 0.36), M.dark, { y: -0.04, z: 0.07 });    // pied
+  add(ankle, new THREE.BoxGeometry(0.16, 0.026, 0.37), M.red, { y: -0.095, z: 0.07 });  // semelle rouge
+}
+leg(1);
+leg(-1);
+
+// Torse bas : tunique serrée à la taille + ceinture et boucle incandescente
+const torso = new THREE.Group();
+torso.position.y = 0.02;
+torso.rotation.x = 0.18;
+hips.add(torso);
+lathe(torso, [[0, 0], [0.14, 0], [0.15, 0.08], [0.12, 0.2], [0.13, 0.3], [0, 0.3]], M.coat, { sx: 1.14, sz: 0.8 });
+add(torso, new THREE.CylinderGeometry(0.155, 0.158, 0.075, 28, 1, true), M.dark, { y: 0.12, sx: 1.14, sz: 0.8 });
+add(torso, new THREE.BoxGeometry(0.06, 0.06, 0.02), M.ember, { y: 0.12, z: 0.125 });
+
+// Buste voûté : une seconde pièce, plus inclinée vers l'avant
+const chest = new THREE.Group();
+chest.position.y = 0.28;
+chest.rotation.x = 0.34;
+torso.add(chest);
+lathe(chest, [[0, 0], [0.12, 0], [0.15, 0.08], [0.17, 0.18], [0.16, 0.28], [0.13, 0.34], [0.07, 0.38], [0, 0.39]], M.coat, { sx: 1.08, sz: 0.78 });
+add(chest, new THREE.CylinderGeometry(0.058, 0.07, 0.1, 14), M.coatLo, { y: 0.43 });  // cou (moignon)
+// Bretelles rouges en X sur la poitrine
+add(chest, new THREE.BoxGeometry(0.035, 0.5, 0.02), M.red, { x: 0.02, y: 0.2, z: 0.14, rz: 0.55 });
+add(chest, new THREE.BoxGeometry(0.035, 0.5, 0.02), M.red, { x: -0.02, y: 0.2, z: 0.14, rz: -0.55 });
+
+// Bras : épaulière violette, manche, gant sombre à liseré rouge
+function arm(side) {
+  const sh = new THREE.Group();
+  sh.position.set(0.17 * side, 0.31, 0);
+  sh.rotation.z = -side * 0.12;
+  chest.add(sh);
+  ball(sh, 0.085, M.purple, { y: 0.02, sy: 0.8 });
+  limb(sh, 0.05, 0.043, 0.33, M.purple);
+
+  const el = new THREE.Group();
+  el.position.y = -0.33;
+  sh.add(el);
+  ball(el, 0.043, M.coat);
+  limb(el, 0.043, 0.036, 0.3, M.coat);
+
+  const wrist = new THREE.Group();
+  wrist.position.y = -0.3;
+  el.add(wrist);
+  add(wrist, new THREE.CylinderGeometry(0.046, 0.042, 0.035, 14), M.red, { y: 0.01 });
+  ball(wrist, 0.045, M.dark, { y: -0.04, sy: 1.35 });
+  return { sh, el, wrist };
+}
+const swordArm = arm(-1);     // bras droit du perso (côté -X)
+swordArm.sh.rotation.x = -0.7;   // lame basse, pointe vers l'avant
+swordArm.el.rotation.x = -0.5;
+const offArm = arm(1);        // bras gauche, équilibre
+offArm.sh.rotation.x = -0.3;
+offArm.el.rotation.x = -1.2;
+
+// Épée courte : poignée, garde en laiton, lame extrudée (métal)
+const sword = new THREE.Group();
+swordArm.wrist.add(sword);
+add(sword, new THREE.CylinderGeometry(0.02, 0.02, 0.13, 10), M.grip, { y: 0.03 });
+add(sword, new THREE.BoxGeometry(0.2, 0.024, 0.045), M.brass, { y: -0.07 });
+add(sword, new THREE.SphereGeometry(0.03, 12, 10), M.brass, { y: 0.1 });
+const bladeShape = new THREE.Shape();
+bladeShape.moveTo(-0.028, 0);
+bladeShape.lineTo(-0.034, 0.12);
+bladeShape.lineTo(-0.02, 0.5);
+bladeShape.lineTo(0, 0.62);
+bladeShape.lineTo(0.02, 0.5);
+bladeShape.lineTo(0.034, 0.12);
+bladeShape.lineTo(0.028, 0);
+bladeShape.closePath();
+const bladeGeo = new THREE.ExtrudeGeometry(bladeShape, {
+  depth: 0.012, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.004, bevelSegments: 2,
+});
+bladeGeo.translate(0, 0, -0.01);
+bladeGeo.rotateZ(Math.PI); // la lame part vers -Y, dans le prolongement de l'avant-bras
+add(sword, bladeGeo, M.steel, { y: -0.09 });
+
+// Cape / écharpe : plan segmenté, effilée, bord déchiré, animée par vertex
+const CAPE_W = 0.46, CAPE_H = 1.4;
+const capeGeo = new THREE.PlaneGeometry(CAPE_W, CAPE_H, 12, 30);
+capeGeo.translate(0, -CAPE_H / 2, 0);
+{
+  const p = capeGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i);
+    const v = -y / CAPE_H;
+    p.setX(i, x * (1 - 0.35 * v));
+    if (y < -CAPE_H + 1e-4) p.setY(i, y - (0.03 + 0.16 * rnd(x * 7.3)));
+  }
+}
+const capeBase = Float32Array.from(capeGeo.attributes.position.array);
+add(chest, capeGeo, M.cape, { y: 0.3, z: -0.12, rx: -0.42 });
+
+// Écharpe : ruban qui sort de la nuque et traîne vers l'arrière, ondule
+const SCARF_L = 1.3;
+const scarfGeo = new THREE.PlaneGeometry(0.14, SCARF_L, 3, 28);
+scarfGeo.rotateX(-Math.PI / 2);          // à plat, la longueur part vers -Z
+scarfGeo.translate(0, 0, -SCARF_L / 2);  // départ à la nuque
+const scarfBase = Float32Array.from(scarfGeo.attributes.position.array);
+add(chest, scarfGeo, new THREE.MeshStandardMaterial({
+  color: 0xa3301a, roughness: 0.7, emissive: 0x240400, emissiveIntensity: 0.6, side: THREE.DoubleSide,
+}), { y: 0.38, z: -0.05, rx: -0.52 });
+
+// Flamme à la place de la tête : coques de révolution qui ondulent + pointes
+const flame = new THREE.Group();
+flame.position.set(0, 0.46, 0);
+chest.add(flame);
+
+const FLAME_H = 0.62;
+const FLAME_PTS = [[0, 0], [0.085, 0.02], [0.13, 0.1], [0.15, 0.22], [0.12, 0.36], [0.07, 0.48], [0.03, 0.56], [0, FLAME_H]];
+const shells = [
+  { s: 1.0,  mat: flameMat(0.05, 0.6, 0.3, 0.45),  phase: 0,   amp: 0.2 },
+  { s: 0.74, mat: flameMat(0.12, 0.95, 0.5, 0.55), phase: 2.1, amp: 0.28 },
+  { s: 0.42, mat: flameMat(0.55, 1.0, 0.7, 0.75),  phase: 4.2, amp: 0.34 },
+].map((cfg) => {
+  const geo = new THREE.LatheGeometry(FLAME_PTS.map(([x, y]) => new THREE.Vector2(x, y)), 24);
+  add(flame, geo, cfg.mat, { sx: cfg.s, sy: cfg.s * 1.05, sz: cfg.s * 0.9, cast: false });
+  return { ...cfg, geo, base: Float32Array.from(geo.attributes.position.array) };
+});
+const tongues = [];
+for (let i = 0; i < 5; i++) {
+  const a = (i / 5) * Math.PI * 2 + 0.4;
+  const g = new THREE.ConeGeometry(0.05, 0.24, 8, 1, true);
+  g.translate(0, 0.12, 0);
+  const m = add(flame, g, flameMat(0.1, 0.75, 0.4, 0.45), {
+    x: Math.cos(a) * 0.08, y: 0.34 + (i % 2) * 0.06, z: Math.sin(a) * 0.07, cast: false,
+  });
+  m.rotation.set(Math.sin(a) * 0.35, 0, -Math.cos(a) * 0.35);
+  tongues.push({ m, a, phase: i * 1.7 });
+}
+const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTexture([[0, 'rgba(150,255,190,0.9)'], [0.3, 'rgba(70,240,160,0.35)'], [1, 'rgba(0,0,0,0)']]),
+  blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+}));
+glow.scale.set(0.8, 0.8, 1);
+glow.position.set(0, 0.3, 0);
+flame.add(glow);
+// Lumière de la flamme : elle éclaire le corps et vacille
+const flameLight = new THREE.PointLight(0x6cffb0, 2.4, 4, 1.6);
+flameLight.position.set(0, 0.28, 0.08);
+flame.add(flameLight);
+
+/* ============================================================
+   Animations
+   ============================================================ */
+function wobbleFlame(sh, t) {
+  const p = sh.geo.attributes.position;
+  const b = sh.base;
+  for (let i = 0; i < p.count; i++) {
+    const x = b[i * 3], y = b[i * 3 + 1], z = b[i * 3 + 2];
+    const h = y / FLAME_H;
+    const a = Math.atan2(z, x);
+    const k = 1 + h * sh.amp * (
+      Math.sin(t * 4.3 + y * 12 + a * 2 + sh.phase) * 0.5 +
+      Math.sin(t * 7.1 - y * 8 + a * 3 + sh.phase * 1.7) * 0.5
+    );
+    p.setXYZ(i, x * k, y + h * 0.03 * Math.sin(t * 5.2 + a * 2 + sh.phase), z * k);
+  }
+  p.needsUpdate = true;
+  sh.geo.computeVertexNormals();
+}
+function animateScarf(t) {
+  const p = scarfGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const bx = scarfBase[i * 3], bz = scarfBase[i * 3 + 2];
+    const u = Math.min(1, -bz / SCARF_L); // 0 à la nuque, 1 au bout
+    const wave = Math.sin(t * 2.2 - u * 5) * 0.09 * u;
+    p.setXYZ(i, bx + Math.sin(t * 1.4 + u * 3) * 0.03 * u, -0.22 * Math.pow(u, 1.5) + wave, bz);
+  }
+  p.needsUpdate = true;
+  scarfGeo.computeVertexNormals();
+}
+function animateCape(t) {
+  const p = capeGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const bx = capeBase[i * 3], by = capeBase[i * 3 + 1];
+    const v = Math.min(1, -by / CAPE_H);
+    const sway = Math.sin(t * 1.3 + v * 2.6 + bx * 3) * 0.06 * v;
+    const flutter = Math.sin(t * 2.4 + v * 5.5 - bx * 8) * 0.025 * v;
+    // la cape s'évase vers l'arrière en descendant : visible de profil
+    p.setXYZ(i, bx + sway, by, -0.25 * Math.pow(v, 1.3) + flutter);
+  }
+  p.needsUpdate = true;
+  capeGeo.computeVertexNormals();
+}
+
+/* ============================================================
+   Caméra, contrôles, vues prédéfinies
+   ============================================================ */
+const TARGET = new THREE.Vector3(0, 1.08, 0);
+const controls = new OrbitControls(camera, canvas);
+controls.target.copy(TARGET);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.enablePan = false;
+controls.minDistance = 2.4;
+controls.maxDistance = 9;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+const VIEWS = {
+  front:   new THREE.Vector3(0.0, 1.45, 4.9),
+  three:   new THREE.Vector3(-3.5, 1.7, 3.6),
+  profile: new THREE.Vector3(-4.9, 1.4, 0.0),
+};
+let tween = null;
+function setView(name, instant = false) {
+  const to = VIEWS[name];
+  if (!to) return;
+  if (instant) {
+    camera.position.copy(to);
+    tween = null;
+    return;
+  }
+  const from = new THREE.Spherical().setFromVector3(camera.position.clone().sub(TARGET));
+  const dest = new THREE.Spherical().setFromVector3(to.clone().sub(TARGET));
+  tween = { from, dest, k: 0 };
+}
+document.querySelectorAll('[data-view]').forEach((btn) =>
+  btn.addEventListener('click', () => setView(btn.dataset.view))
+);
+
+/* ============================================================
+   Post-traitement : bloom sur la flamme et le métal chaud
+   ============================================================ */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.4, 0.82));
+composer.addPass(new OutputPass());
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  composer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.fov = w / h < 0.8 ? 46 : 32; // plus de recul sur mobile en portrait
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+setView(new URLSearchParams(location.search).get('view') || 'three', true);
+
+/* ============================================================
+   Boucle
+   ============================================================ */
+const t0 = performance.now();
+let last = t0;
+function frame(now) {
+  const t = (now - t0) / 1000;
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  // Idle : respiration, rebond, flamme qui ondule
+  bob.position.y = Math.sin(t * 1.7) * 0.012;
+  chest.rotation.x = 0.34 + Math.sin(t * 1.7 + 0.6) * 0.025;
+  flame.rotation.z = Math.sin(t * 1.3) * 0.04;
+  flame.rotation.x = Math.sin(t * 0.9) * 0.03;
+  for (const sh of shells) wobbleFlame(sh, t);
+  for (const tg of tongues) {
+    tg.m.rotation.z = -Math.cos(tg.a) * 0.35 + Math.sin(t * 3.1 + tg.phase) * 0.12;
+    tg.m.scale.y = 0.85 + 0.35 * Math.sin(t * 6.2 + tg.phase) ** 2;
+  }
+  // Vacillement de la lumière et du halo
+  flameLight.intensity = 2.4 + Math.sin(t * 17) * 0.3 + Math.sin(t * 6.3) * 0.35 + Math.sin(t * 31) * 0.12;
+  glow.material.opacity = 0.5 + Math.sin(t * 9) * 0.06;
+  animateCape(t);
+  animateScarf(t);
+
+  // Transition douce entre les vues (interpolation sphérique)
+  if (tween) {
+    tween.k = Math.min(1, tween.k + dt / 0.9);
+    const e = tween.k < 0.5 ? 4 * tween.k ** 3 : 1 - (-2 * tween.k + 2) ** 3 / 2;
+    const s = new THREE.Spherical(
+      THREE.MathUtils.lerp(tween.from.radius, tween.dest.radius, e),
+      THREE.MathUtils.lerp(tween.from.phi, tween.dest.phi, e),
+      THREE.MathUtils.lerp(tween.from.theta, tween.dest.theta, e),
+    );
+    camera.position.setFromSpherical(s).add(TARGET);
+    if (tween.k >= 1) tween = null;
+  }
+
+  controls.update();
+  composer.render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
